@@ -1,35 +1,34 @@
 import streamlit as st
 from openai import OpenAI
+import re
 
-# session state for chat history
-if "messages" not in st.session_state:
-    st.session_state.messages = [
-        {"role": "assistant", "content": "Hello! How can I help you today?"}
-    ]
+st.set_page_config(
+    page_title="Chat playground",
+    page_icon="💬",
+    layout="wide",
+    initial_sidebar_state="expanded",
+)
 
-api_key = st.secrets["api_key"]
-
-
-def deepseek_chat(api_key: str, messages: list) -> str:
-    try:
-        client = OpenAI(api_key=api_key, base_url="https://api.deepseek.com")
-        response = client.chat.completions.create(
-            model="deepseek-chat",
-            messages=[
-                {"role": "system", "content": "You are a helpful assistant"},
-                *messages
-            ],
-            stream=False
-        )
-        return response.choices[0].message.content
-    except Exception as e:
-        st.error(f"Error occurred: {str(e)}")
-        return ""
+remove = False
+def processed_stream(stream):
+    global remove
+    for chunk in stream:
+        delta = chunk.choices[0].delta.content
+        if delta == '<think>':
+            remove = True
+        elif delta == '</think>':
+            remove = False
+        else:
+            if not remove:
+                yield chunk
 
 
 def main():
-    st.title('🤖 DeepSeek Chatbot')
+    """
+    The main function that runs the application.
+    """
 
+    st.title('🤖 DeepSeek R1 Chatbot')
     with st.sidebar:
         st.header("📚 User Guide")
         st.markdown("""
@@ -47,29 +46,53 @@ def main():
         If you encounter any issues, try resetting the chat using the button below.
         """)
 
-        if st.button("Reset Chat"):
-            st.session_state.messages = [
-                {"role": "assistant", "content": "Hello! How can I help you today?"}
-            ]
-            st.rerun()
+    url = st.secrets['OLLAMA_URL']
+    client = OpenAI(
+        base_url=url,
+        api_key="ollama",  # required, but unused
+    )
+
+    selected_model = 'deepseek-r1:7b'
+    message_container = st.container(height=400, border=True)
+
+    if "messages" not in st.session_state:
+        st.session_state.messages = []
 
     for message in st.session_state.messages:
-        with st.chat_message(message["role"]):
-            st.write(message["content"])
+        avatar = "🤖" if message["role"] == "assistant" else "😎"
+        with message_container.chat_message(message["role"], avatar=avatar):
+            st.markdown(message["content"])
 
-    if prompt := st.chat_input("What's on your mind?"):
-        st.session_state.messages.append({"role": "user", "content": prompt})
+    if prompt := st.chat_input("Enter a prompt here..."):
+        try:
+            st.session_state.messages.append(
+                {"role": "user", "content": prompt})
 
-        with st.chat_message("user"):
-            st.write(prompt)
+            message_container.chat_message("user", avatar="😎").markdown(prompt)
 
-        with st.chat_message("assistant"):
-            with st.spinner("Thinking..."):
-                response = deepseek_chat(api_key, st.session_state.messages)
-                if response:
-                    st.write(response)
-                    st.session_state.messages.append(
-                        {"role": "assistant", "content": response})
+            with message_container.chat_message("assistant", avatar="🤖"):
+                with st.spinner("model working..."):
+                    stream = client.chat.completions.create(
+                        model=selected_model,
+                        messages=[
+                            {"role": m["role"], "content": m["content"]}
+                            for m in st.session_state.messages
+                        ],
+                        stream=True,
+                    )
+                # stream response
+                response = st.write_stream(processed_stream(stream))
+            st.session_state.messages.append(
+                {"role": "assistant", "content": response})
+
+        except Exception as e:
+            st.error(e, icon="⛔️")
+    if st.button("Reset Chat"):
+        st.session_state.messages = [
+            ]
+        st.rerun()
+
+
 
 
 if __name__ == "__main__":
